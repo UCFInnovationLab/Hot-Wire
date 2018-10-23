@@ -1,0 +1,205 @@
+/*
+ * uart.c
+ *
+ *  Created on: May 21, 2013
+ *      Author: Collin
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <uart.h>
+#include <uart_buffer.h>
+
+#include "inc/hw_memmap.h"
+#include "ucs.h"
+#include "usci_a_uart.h"
+#include "gpio.h"
+
+
+static circular_buffer rx_buffer; //incoming data
+static circular_buffer tx_buffer; //outgoing data
+
+#define UCA0TXD_PIN     GPIO_PORT_P3,GPIO_PIN3
+#define UCA0RXD_PIN     GPIO_PORT_P3,GPIO_PIN4
+
+/* _uart_transmitCharacter()
+ *
+ * Transmit a single character, taken from the transmit buffer
+ * over the UART.
+ *
+ * Arguments:
+ * NONE
+ *
+ * Returns:
+ * NONE
+ *
+ */
+static void _uart_transmitCharacter()
+{
+	char data = 0x00;
+
+	/* Try and get a character from the transmit buffer.
+	 * If data is available, transmit it.
+	 */
+	if (buffer_read(&tx_buffer, &data, 1) == 1)
+	{
+		USCI_A_UART_transmitData(USCI_A0_BASE, data);
+	}
+}
+
+/* uart_init()
+ *
+ * Setup the UART.
+ *
+ * Arguments:
+ * NONE
+ *
+ * Returns:
+ * NONE
+ *
+ */
+void uart_init()
+{
+	//Initialize USCI UART module
+    GPIO_setAsPeripheralModuleFunctionInputPin(UCA0TXD_PIN);
+    GPIO_setAsPeripheralModuleFunctionInputPin(UCA0RXD_PIN);
+
+    // From Table 36-4 in the family user's manual where UCOS16 = 0 and
+    //            baudrate = 9600
+    //            clock freq = 8MHz
+    // UCBRx = 833, UCBRFx = 0, UCBRSx = 2, UCOS16 = 0
+    USCI_A_UART_initParam param = {0};
+    param.selectClockSource = USCI_A_UART_CLOCKSOURCE_SMCLK;
+    param.clockPrescalar = 833;                                             // UCBRx
+    param.firstModReg = 0;                                                  // UCBRFx
+    param.secondModReg = 2;                                                 // UCBRSx
+    param.parity = USCI_A_UART_NO_PARITY;
+    param.msborLsbFirst = USCI_A_UART_LSB_FIRST;
+    param.numberofStopBits = USCI_A_UART_ONE_STOP_BIT;
+    param.uartMode = USCI_A_UART_MODE;
+    param.overSampling = USCI_A_UART_LOW_FREQUENCY_BAUDRATE_GENERATION;     // UCOS16 = 0
+
+    if(STATUS_FAIL == USCI_A_UART_init(USCI_A0_BASE, &param))
+    {
+        //GPIO_setOutputHighOnPin(RED_LED);
+        return;
+    }
+
+	//Enable UART module for operation
+	USCI_A_UART_enable(USCI_A0_BASE);
+
+	//Enable Receive Interrupt
+	USCI_A_UART_clearInterrupt(USCI_A0_BASE, USCI_A_UART_RECEIVE_INTERRUPT);
+	USCI_A_UART_clearInterrupt(USCI_A0_BASE, USCI_A_UART_TRANSMIT_INTERRUPT);
+	USCI_A_UART_enableInterrupt(USCI_A0_BASE, USCI_A_UART_RECEIVE_INTERRUPT);
+	USCI_A_UART_enableInterrupt(USCI_A0_BASE, USCI_A_UART_TRANSMIT_INTERRUPT);
+
+	/* Setup the tx/rx buffers. */
+	buffer_init(&rx_buffer);
+	buffer_init(&tx_buffer);
+}
+
+/* uart_puts()
+ *
+ * Put a string out the uart. This function is asynchronous and returns
+ * immediately, on success or failure. Characters will be written out
+ * onto the bus automatically.
+ *
+ * Arguments:
+ * str:		The string to write over the UART.
+ * len:		The length of the string to write.
+ *
+ * Returns:
+ * The total number of characters actually written.
+ *
+ */
+uint8_t uart_puts(char* str, uint8_t len)
+{
+	uint8_t len_written = 0;
+
+	/* Write the new data to the buffer. */
+	len_written = buffer_write(&tx_buffer, str, len);
+
+	/* If the write succeeded and data is now available, and the uart is idle, transmit a character. */
+	if (len_written > 0 && !USCI_A_UART_queryStatusFlags(USCI_A0_BASE, USCI_A_UART_BUSY))
+	{
+		_uart_transmitCharacter();
+	}
+
+	return len_written;
+}
+
+
+/* uart_gets()
+ *
+ * Retrieve characters already received on the UART.
+ *
+ * Arguments:
+ * str:		The string to read data into.
+ * max_len:	The number of maximum bytes to read into the buffer.
+ *
+ * Returns:
+ * The total number of characters actually written.
+ *
+ */
+uint8_t uart_gets(char* str, uint8_t max_len)
+{
+	/* Pull data from the RX buffer and return it to the user. */
+	return buffer_read(&rx_buffer, str, max_len);
+}
+
+/* uart_peeks()
+ *
+ * Peek at characters already received on the UART. Does not remove them from
+ * input stream as uart_gets will.
+ *
+ * Arguments:
+ * str:		The string to copy data into.
+ * max_len:	The number of maximum bytes to read into the buffer.
+ *
+ * Returns:
+ * The total number of characters actually read.
+ *
+ */
+uint8_t uart_peeks(char* str, uint8_t max_len)
+{
+	return buffer_peek(&rx_buffer, str, max_len);
+}
+
+
+uint8_t _uart_debugRX(char* str, uint8_t len)
+{
+	uint8_t len_written = 0;
+
+	/* Write the new data to the buffer. */
+	len_written = buffer_write(&rx_buffer, str, len);
+
+	return len_written;
+}
+
+
+#pragma vector=USCI_A0_VECTOR
+__interrupt void USCI_A0_ISR(void)
+{
+	char data = 0x00;
+
+	switch (__even_in_range(UCA0IV, 4))
+	{
+		case USCI_UCRXIFG:
+			/* Receive data and place it into the RX buffer. */
+			data = USCI_A_UART_receiveData(USCI_A0_BASE);
+			buffer_write(&rx_buffer, &data, 1);
+			break;
+
+		case USCI_UCTXIFG:
+			/* The TX buffer is empty so transmit the next character.
+			 * If none exists, this function does nothing and the chain of
+			 * interrupts stops until the next string is entered into the buffer. */
+			_uart_transmitCharacter();
+			break;
+
+		default:
+			break;
+	}
+}
