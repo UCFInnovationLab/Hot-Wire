@@ -16,6 +16,8 @@
 
 static tick_t tick = 0;
 
+extern unsigned int  flag;
+
 /* tick_init()
  *
  * Initializes the tick hardware components (timer_a)
@@ -86,4 +88,9 @@ void TIMER0_B0_ISR(void) __attribute__((interrupt(TIMER0_B0_VECTOR)));
 void TIMER0_B0_ISR(void)
 {
     tick++;                         //Timer Overflow
+    if (debounce_switch_s2())
+        flag |= BIT0;
+
+    if (debounce_switch_s1())
+        flag |= BIT1;
 }

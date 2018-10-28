@@ -74,13 +74,9 @@ unsigned int set_temp;	// temporary for setting Threshold temperature
 unsigned int num=0;		// temporary for setting Threshold temperature
 		 int Act_temp;	// Actual temperature
 
-unsigned int debounce_switch_s1_time = 0;
-unsigned int debounce_switch_s1_state = 0;
-
-unsigned int debounce_switch_s2 = 0;
-unsigned int debounce_switch_s2_start_time = 0;
-
 float current_temperature=0.0;
+
+bool switch_s2_pressed = false;
 
 #define GPIO_ALL    GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3| \
                     GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7
@@ -143,33 +139,6 @@ int main(int argc, char *argv[])
         // read ADC result
         if(flag & BIT4)         //Read ADC result
         {
-            switch (debounce_switch_s1_state) {
-                case 0:
-                    break;
-                case 1:
-                    debounce_switch_s1_state = 2;
-                    debounce_switch_s1_time = tick_getTime();
-                    break;
-                case 2:
-                    if ((tick_getTime() - debounce_switch_s1_time) > 150) {
-                        debounce_switch_s1_state = 3;
-                    }
-                    break;
-                case 3:
-                    if (GPIO_getInputPinValue(GPIO_PORT_P2, GPIO_PIN1)) {
-                        debounce_switch_s1_time = tick_getTime();
-                        debounce_switch_s1_state = 4;
-                    }
-                    break;
-                case 4:
-                    if ((tick_getTime() - debounce_switch_s1_time) > 150) {
-                        debounce_switch_s1_state = 0;
-                        GPIO_clearInterrupt(GPIO_PORT_P2, GPIO_PIN1);
-                        GPIO_enableInterrupt(GPIO_PORT_P2, GPIO_PIN1);
-                    }
-                    break;
-            }
-
             ADC_display();
             blink_led2();
 
@@ -494,8 +463,6 @@ void half_second()
  */
 void set_Thrtemp()
 {
-    set_temp = Thr_temp;
-
     if (Thr_state == 0x01)
     {
         if (set_temp/100 == 9)
@@ -531,8 +498,6 @@ void set_Thrtemp()
     }
     else
     __no_operation();
-
-    Thr_temp = set_temp;
 }
 
 
@@ -606,16 +571,10 @@ void GPIO_init()
     // P1.1 SW2 Input
     GPIO_setOutputHighOnPin(GPIO_PORT_P1, GPIO_PIN1);
     GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P1, GPIO_PIN1);
-    GPIO_selectInterruptEdge(GPIO_PORT_P1, GPIO_PIN1, GPIO_HIGH_TO_LOW_TRANSITION);
-    GPIO_clearInterrupt(GPIO_PORT_P1, GPIO_PIN1);
-    GPIO_enableInterrupt(GPIO_PORT_P1, GPIO_PIN1);
 
     // P2.1 SW1 input
     GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN1);
     GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P2, GPIO_PIN1);
-    GPIO_selectInterruptEdge(GPIO_PORT_P2, GPIO_PIN1, GPIO_HIGH_TO_LOW_TRANSITION);
-    GPIO_clearInterrupt(GPIO_PORT_P2, GPIO_PIN1);
-    GPIO_enableInterrupt(GPIO_PORT_P2, GPIO_PIN1);
 
     // Buzzer off
     GPIO_setOutputHighOnPin(GPIO_PORT_P6, GPIO_PIN5);
@@ -733,6 +692,21 @@ void InitTimers(void)
           );
 }
 
+bool debounce_switch_s1()
+{
+    static uint16_t state = 0; // Current debounce state
+    state = (state<<1) | !GPIO_getInputPinValue(GPIO_PORT_P2, GPIO_PIN1) | 0xe000;
+    if (state==0xf000) return true;
+    return false;
+}
+
+bool debounce_switch_s2()
+{
+    static uint16_t state = 0; // Current debounce state
+    state = (state<<1) | !GPIO_getInputPinValue(GPIO_PORT_P1, GPIO_PIN1) | 0xe000;
+    if (state==0xf000) return true;
+    return false;
+}
 
 //***************************************************************************
 //***************************************************************************
@@ -743,60 +717,6 @@ void InitTimers(void)
 //***************************************************************************8
 //***************************************************************************8
 //***************************************************************************8
-
-/*
- * Port 1 interrupt service routine to handle S2 button press
- *
- */
-#if defined (__TI_COMPILER_VERSION__) || defined (__IAR_SYSTEMS_ICC__)
-#pragma vector = PORT1_VECTOR
-__interrupt
-#elif defined(__GNUC__)
-void Port_1_ISR(void) __attribute__((interrupt(PORT1_VECTOR)));
-#else
-#error Compiler not supported!
-#endif
-void Port_1_ISR(void)
-{
-    GPIO_disableInterrupt(GPIO_PORT_P1, GPIO_PIN1);
-
-    if (GPIO_getInterruptStatus(GPIO_PORT_P1, GPIO_PIN1))      // Switch S2
-    {
-        flag |= BIT0;       // flag bit 1 is set
-        GPIO_clearInterrupt(GPIO_PORT_P1, GPIO_PIN1);
-    }
-
-    //GPIO_enableInterrupt(GPIO_PORT_P1, GPIO_PIN1);
-    debounce_switch_s2 = 1;
-    debounce_switch_s2_start_time = tick_getTime();
-}
-
-/*
- * Port 2 interrupt service routine to handle S1 button press
- *
- */
-#if defined (__TI_COMPILER_VERSION__) || defined (__IAR_SYSTEMS_ICC__)
-#pragma vector = PORT2_VECTOR
-__interrupt
-#elif defined(__GNUC__)
-void Port_2_ISR(void) __attribute__((interrupt(PORT2_VECTOR)));
-#else
-#error Compiler not supported!
-#endif
-void Port_2_ISR(void)
-{
-    GPIO_disableInterrupt(GPIO_PORT_P2, GPIO_PIN1);
-
-    if (GPIO_getInterruptStatus(GPIO_PORT_P2, GPIO_PIN1))      // Switch S1
-    {
-        flag |= BIT1;       // flag bit 1 is set
-        GPIO_clearInterrupt(GPIO_PORT_P2, GPIO_PIN1);
-    }
-
-    //GPIO_enableInterrupt(GPIO_PORT_P2, GPIO_PIN1);
-    debounce_switch_s1_state = 1;
-}
-
 
 /*
  *  ======== Timer0_A0 Interrupt Service Routine ========
