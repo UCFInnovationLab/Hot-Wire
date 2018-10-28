@@ -102,6 +102,7 @@ BC_RXBUF_SIZE+1     */
 
 void bcUartInit(void);
 void bcUartSend(uint8_t* buf, uint8_t len);
+void bcUartSendByte(uint8_t b);
 uint16_t bcUartReceiveBytesInBuffer(uint8_t* buf);
 
 #endif /* BCUART_H_ */
