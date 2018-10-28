@@ -32,6 +32,7 @@
 #include "tick.h"
 #include "pwm.h"
 #include "serial_cmd_monitor.h"
+#include "BCUart.h"
 
 void set_Thrtemp();     //set threshold temperature
 void half_second();
@@ -73,8 +74,11 @@ volatile unsigned char Thr_state;	// state for threshold temperature setting sta
 
 float error;
 float sum_error=0;
+float prev_error;
+float d_error;
 float P = 35.0;
 float I = 0.03;
+float D = 0.00;
 int pwm;
 
 unsigned int target_temperature;	// Threshold temperature in degrees Centigrade
@@ -114,9 +118,9 @@ int main(int argc, char *argv[])
 {
 
 
-    char temp_string[30];
-    int i=0;
-    int mytime[30];
+    //char temp_string[30];
+    //int i=0;
+    //int mytime[30];
 
     /*** main system initialization
      *     UART, GPIO, WDT, CLOCK, System Registers
@@ -166,8 +170,10 @@ int main(int argc, char *argv[])
                     sum_error += error;
                     if (sum_error < 0) sum_error = 0;   // anit-windup
                     if (sum_error > (500.0/I)) sum_error = (500.0/I);
+                    d_error = error - prev_error;
+                    prev_error = error;
 
-                    pwm = P * error +  I * sum_error;
+                    pwm = P * error +  I * sum_error + D * d_error;
                     if (pwm > 512) pwm = 512;
                     if (pwm < 0) pwm = 0;
 
