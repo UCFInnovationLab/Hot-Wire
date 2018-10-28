@@ -24,4 +24,22 @@
 		<nature>org.eclipse.cdt.core.ccnature</nature>
 		<nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
 	</natures>
+	<linkedResources>
+		<link>
+			<name>serial_cmd_monitor.c</name>
+			<type>1</type>
+			<locationURI>source/Serial_Cmd_Monitor.c</locationURI>
+		</link>
+		<link>
+			<name>serial_cmd_monitor.h</name>
+			<type>1</type>
+			<locationURI>source/Serial_Cmd_Monitor.h</locationURI>
+		</link>
+	</linkedResources>
+	<variableList>
+		<variable>
+			<name>source</name>
+			<value>$%7BPARENT-2-PROJECT_LOC%7D/Downloads/MSP_uart_monitor/MSP_uart_monitor</value>
+		</variable>
+	</variableList>
 </projectDescription>

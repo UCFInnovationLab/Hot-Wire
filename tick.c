@@ -18,6 +18,11 @@ static tick_t tick = 0;
 
 extern unsigned int  flag;
 
+bool debounce_switch_s1();
+bool debounce_switch_s2();
+bool debounce_switch_sw1();
+bool debounce_switch_sw2();
+
 /* tick_init()
  *
  * Initializes the tick hardware components (timer_a)
@@ -93,4 +98,10 @@ void TIMER0_B0_ISR(void)
 
     if (debounce_switch_s1())
         flag |= BIT1;
+
+    if (debounce_switch_sw1())
+        flag |= BITA;
+
+    if (debounce_switch_sw2())
+        flag |= BITB;
 }

@@ -64,12 +64,19 @@ http://processors.wiki.ti.com/index.php/USCI_UART_Baud_Rate_Gen_Mode_Selection
    Ultimately, the final reference is the UCS chapter of the F5xx Family User's
    Guide.) */
 
+// 9600 baud
 #define UCA1_OS   0    // 1 = oversampling mode, 0 = low-freq mode
-#define UCA1_BR0  69   // Value of UCA1BR0 register
-#define UCA1_BR1  0    // Value of UCA1BR1 register
-#define UCA1_BRS  4    // Value of UCBRS field in UCA1MCTL register
+#define UCA1_BR0  65   // Value of UCA1BR0 register
+#define UCA1_BR1  3    // Value of UCA1BR1 register
+#define UCA1_BRS  2    // Value of UCBRS field in UCA1MCTL register
 #define UCA1_BRF  0    // Value of UCBRF field in UCA1MCTL register
 
+// 115200 baud
+//#define UCA1_OS   0    // 1 = oversampling mode, 0 = low-freq mode
+//#define UCA1_BR0  69   // Value of UCA1BR0 register
+//#define UCA1_BR1  0    // Value of UCA1BR1 register
+//#define UCA1_BRS  4    // Value of UCBRS field in UCA1MCTL register
+//#define UCA1_BRF  0    // Value of UCBRF field in UCA1MCTL register
 
 // There is no hardware RTS/CTS handshaking in this example.  Your code must
 // remain responsive to incoming UART data, to avoid overruns.

@@ -32,6 +32,7 @@
  
 #include <BCUart.h>
 #include "msp430.h"
+#include "serial_cmd_monitor.h"
 
 // Receive buffer for the UART.  Incoming bytes need a place to go immediately,
 // otherwise there might be an overrun when the next comes in.  The USCI ISR
@@ -83,6 +84,11 @@ void bcUartSend(uint8_t * buf, uint8_t len)
     }
 }
 
+void bcUartSendByte(uint8_t b) {
+    UCA1TXBUF = b;
+    // Wait until each bit has been clocked out...
+    while(!(UCTXIFG==(UCTXIFG & UCA1IFG))&&((UCA1STAT & UCBUSY)==UCBUSY));
+}
 
 // Copies into 'buf' whatever bytes have been received on the UART since the
 // last fetch.  Returns the number of bytes copied.
@@ -115,13 +121,14 @@ uint16_t bcUartReceiveBytesInBuffer(uint8_t* buf)
 #pragma vector=USCI_A1_VECTOR
 __interrupt void bcUartISR(void)
 {
-    bcUartRcvBuf[bcUartRcvBufIndex++] = UCA1RXBUF;  // Fetch the byte, store
-                                                    // it in the buffer.
-
-    // Wake main, to fetch data from the buffer.
-    if(bcUartRcvBufIndex >= BC_RX_WAKE_THRESH)
-    {
-        bcUartRxThreshReached = 1;
-        __bic_SR_register_on_exit(LPM3_bits);       // Exit LPM0-3
-    }
+    receivedDataCommand(UCA1RXBUF);
+//    bcUartRcvBuf[bcUartRcvBufIndex++] = UCA1RXBUF;  // Fetch the byte, store
+//                                                    // it in the buffer.
+//
+//    // Wake main, to fetch data from the buffer.
+//    if(bcUartRcvBufIndex >= BC_RX_WAKE_THRESH)
+//    {
+//        bcUartRxThreshReached = 1;
+//        __bic_SR_register_on_exit(LPM3_bits);       // Exit LPM0-3
+//    }
 }

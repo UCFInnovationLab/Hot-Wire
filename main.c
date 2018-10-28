@@ -31,6 +31,7 @@
 #include "foam_cutter.h"
 #include "tick.h"
 #include "pwm.h"
+#include "serial_cmd_monitor.h"
 
 void set_Thrtemp();     //set threshold temperature
 void half_second();
@@ -62,14 +63,21 @@ void InitTimers();
  * Bit5, ADC input flag, 0 is internal temperature sensor, 1 is AIN0-AIN1
  * Bit6, toggle every half a second
  * Bit7, half a second interrupt
- * Bit8, for Fahrenheit display
+ * Bit8, Fahrenheit display
  * Bit9, ADC channel flag, 0 for channel 0, 1 for channel 1.
- * BitA,
+ * BitA, ADS1118 Switch SW1 pressed
+ * BitB, ADS1118 Switch SW2 pressed
  */
 volatile unsigned int  flag;		//global flag.
 volatile unsigned char Thr_state;	// state for threshold temperature setting state machine.
 
-unsigned int Thr_temp;	// Threshold temperature in degrees Centigrade
+float error;
+float sum_error=0;
+float P = 35.0;
+float I = 0.03;
+int pwm;
+
+unsigned int target_temperature;	// Threshold temperature in degrees Centigrade
 unsigned int set_temp;	// temporary for setting Threshold temperature
 unsigned int num=0;		// temporary for setting Threshold temperature
 		 int Act_temp;	// Actual temperature
@@ -77,6 +85,8 @@ unsigned int num=0;		// temporary for setting Threshold temperature
 float current_temperature=0.0;
 
 bool switch_s2_pressed = false;
+
+bool is_running = false;
 
 #define GPIO_ALL    GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3| \
                     GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7
@@ -102,12 +112,11 @@ int _system_pre_init(void)
  */
 int main(int argc, char *argv[])
 {
-    int pwm;
-    float error;
-    float sum_error=0;
-    float P = 35.0;
-    float I = 0.03;
+
+
     char temp_string[30];
+    int i=0;
+    int mytime[30];
 
     /*** main system initialization
      *     UART, GPIO, WDT, CLOCK, System Registers
@@ -125,34 +134,49 @@ int main(int argc, char *argv[])
             half_second();
             blink_led1();
 
-            sprintf(temp_string, "{\"current_temperature\": %0.2f}\n", current_temperature);
-            bcUartSend(temp_string, strlen(temp_string));
-            sprintf(temp_string, "{\"sum_error\": %0.2f}\n", sum_error);
-            bcUartSend(temp_string, strlen(temp_string));
-            sprintf(temp_string, "{\"error\": %0.2f}\n", error);
-            bcUartSend(temp_string, strlen(temp_string));
-            sprintf(temp_string, "{\"target\": %d}\n", Thr_temp);
-            bcUartSend(temp_string, strlen(temp_string));
+//            Example using streaming to send data to GC Composer
+//
+//            sprintf(temp_string, "{\"current_temperature\": %0.2f}\n", current_temperature);
+//            bcUartSend(temp_string, strlen(temp_string));
+//            sprintf(temp_string, "{\"sum_error\": %0.2f}\n", sum_error);
+//            bcUartSend(temp_string, strlen(temp_string));
+//            sprintf(temp_string, "{\"error\": %0.2f}\n", error);
+//            bcUartSend(temp_string, strlen(temp_string));
+//            sprintf(temp_string, "{\"target\": %d}\n", target_temperature);
+//            bcUartSend(temp_string, strlen(temp_string));
         }
 
         // 1/10 second interrupt
         // read ADC result
         if(flag & BIT4)         //Read ADC result
         {
+// Are we hitting our interrupt rates?
+//            mytime[i] = tick_getTime();
+//            if (i==20)
+//                i=0;
+//            else
+//                i++;
+
             ADC_display();
-            blink_led2();
 
-            if ((current_temperature > 20) && (current_temperature < 300)) {
-                error = Thr_temp - current_temperature;
-                sum_error += error;
-                if (sum_error < 0) sum_error = 0;   // anit-windup
+            // PID
+            if (is_running) {
+                if ((current_temperature > 20) && (current_temperature < 300)) {
+                    error = target_temperature - current_temperature;
+                    sum_error += error;
+                    if (sum_error < 0) sum_error = 0;   // anit-windup
+                    if (sum_error > (500.0/I)) sum_error = (500.0/I);
 
+                    pwm = P * error +  I * sum_error;
+                    if (pwm > 512) pwm = 512;
+                    if (pwm < 0) pwm = 0;
 
-                pwm = P * error +  I * sum_error;
-                if (pwm > 512) pwm = 512;
-                if (pwm < 0) pwm = 0;
-
-                set_pwm_duty_cycle_1(pwm);
+                    set_pwm_duty_cycle_1(pwm);
+                }
+            } else { // paused
+                set_pwm_duty_cycle_1(0);
+                sum_error=0;
+                error=0;
             }
 
         }
@@ -174,8 +198,8 @@ int main(int argc, char *argv[])
    			if(Thr_state >= 3)		// if in state 3, change to state 0;
    			{
    				Thr_state = 0;
-   				Thr_temp = set_temp;				// assign threshold temperature
-   				LCD_display_number(0,3,Thr_temp);	// display threshold temperature
+   				target_temperature = set_temp;				// assign threshold temperature
+   				LCD_display_number(0,3,target_temperature);	// display threshold temperature
    			}
    			else					//else, Thr_state is changed to next state
    			{
@@ -183,6 +207,14 @@ int main(int argc, char *argv[])
    			}
    		}
 
+   		if (flag & BITA)
+   		{
+   		    flag &= ~BITA;
+   		    is_running = !is_running; // toggle Running
+   		}
+
+   		if (is_running) set_led2(true);
+   		else set_led2(false);
 
    		__no_operation();
     }
@@ -311,15 +343,17 @@ void Initialize()
 
     bcUartInit();
 
+    ClearBufferRelatedParam();      // GC Monitor stuff
+
     // Enable global interrupt
     __enable_interrupt();
 
     flag  = 0;      //reset flag
 
     Thr_state = 0;  //threshold temperature setting state machine counter
-    Thr_temp = 50; //configure threshold temperature to 100;
+    target_temperature = 50; //configure threshold temperature to 100;
     Act_temp = 0;
-    set_temp = Thr_temp; // set for future use in changing values
+    set_temp = target_temperature; // set for future use in changing values
 
     // IO initial
     GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN6);    // CS of LCD HIGH
@@ -337,7 +371,7 @@ void Initialize()
     LCD_display_string(1,"Temp:        CH0\0"); // display threshold temp and actual temp;
     LCD_display_char(1,10,0xDF);
     LCD_display_char(1,11,'F');
-    LCD_display_number(0,3,Thr_temp);// display threshold temp number
+    LCD_display_number(0,3,target_temperature);// display threshold temp number
 
     ADS_Config(0);                  // set ADS1118 to convert local temperature, and start conversion.
 }
@@ -413,7 +447,6 @@ void ADC_display()
 
 void half_second()
 {
-    int threshold_temp;
     flag &= ~ BIT7;
 
 
@@ -568,13 +601,21 @@ void GPIO_init()
     // Set all ports to output low
     initPorts();
 
-    // P1.1 SW2 Input
+    // P1.1 S2 Input
     GPIO_setOutputHighOnPin(GPIO_PORT_P1, GPIO_PIN1);
     GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P1, GPIO_PIN1);
 
-    // P2.1 SW1 input
+    // P2.1 S1 input
     GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN1);
     GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P2, GPIO_PIN1);
+
+    // P4.2 SW1 Input
+    GPIO_setOutputHighOnPin(GPIO_PORT_P4, GPIO_PIN2);
+    GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P1, GPIO_PIN1);
+
+    // P4.1 SW2 input
+    GPIO_setOutputHighOnPin(GPIO_PORT_P4, GPIO_PIN1);
+    GPIO_setAsInputPinWithPullUpResistor(GPIO_PORT_P4, GPIO_PIN1);
 
     // Buzzer off
     GPIO_setOutputHighOnPin(GPIO_PORT_P6, GPIO_PIN5);
@@ -704,6 +745,22 @@ bool debounce_switch_s2()
 {
     static uint16_t state = 0; // Current debounce state
     state = (state<<1) | !GPIO_getInputPinValue(GPIO_PORT_P1, GPIO_PIN1) | 0xe000;
+    if (state==0xf000) return true;
+    return false;
+}
+
+bool debounce_switch_sw1()
+{
+    static uint16_t state = 0; // Current debounce state
+    state = (state<<1) | !GPIO_getInputPinValue(GPIO_PORT_P4, GPIO_PIN2) | 0xe000;
+    if (state==0xf000) return true;
+    return false;
+}
+
+bool debounce_switch_sw2()
+{
+    static uint16_t state = 0; // Current debounce state
+    state = (state<<1) | !GPIO_getInputPinValue(GPIO_PORT_P4, GPIO_PIN1) | 0xe000;
     if (state==0xf000) return true;
     return false;
 }
