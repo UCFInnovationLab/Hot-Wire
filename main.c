@@ -23,20 +23,21 @@
  */
 #include <msp430.h>
 #include <driverlib.h>
+#include <stdio.h>
 
 #include "ADS1118.h"
 #include "LCD_driver.h"
 #include "led.h"
-#include "uart.h"
 #include "foam_cutter.h"
+#include "tick.h"
+#include "pwm.h"
 
-void System_Initial();  //Initialize system
 void set_Thrtemp();     //set threshold temperature
 void half_second();
 void ADC_display();
 
 /** new system functions for the F5529 ***/
-void SysInit_F5529();
+void Initialize();
 void GPIO_init(void);
 void InitSPI();
 void InitTimers();
@@ -59,7 +60,7 @@ void InitTimers();
  * Bit3, 1 second timer interrupt
  * Bit4, timer for ADC interrupts
  * Bit5, ADC input flag, 0 is internal temperature sensor, 1 is AIN0-AIN1
- * Bit6, make an inversion every half a second
+ * Bit6, toggle every half a second
  * Bit7, half a second interrupt
  * Bit8, for Fahrenheit display
  * Bit9, ADC channel flag, 0 for channel 0, 1 for channel 1.
@@ -72,6 +73,18 @@ unsigned int Thr_temp;	// Threshold temperature in degrees Centigrade
 unsigned int set_temp;	// temporary for setting Threshold temperature
 unsigned int num=0;		// temporary for setting Threshold temperature
 		 int Act_temp;	// Actual temperature
+
+unsigned int debounce_switch_s1_time = 0;
+unsigned int debounce_switch_s1_state = 0;
+
+unsigned int debounce_switch_s2 = 0;
+unsigned int debounce_switch_s2_start_time = 0;
+
+float current_temperature=0.0;
+
+#define GPIO_ALL    GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3| \
+                    GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7
+
 
 //-----------------------------------------------------------------------------
 int _system_pre_init(void)
@@ -88,26 +101,25 @@ int _system_pre_init(void)
 	return 1;
 }
 
-unsigned int t,s;
-
 /*
  *  ======== main ========
  */
 int main(int argc, char *argv[])
 {
+    int pwm;
+    float error;
+    float sum_error=0;
+    float P = 35.0;
+    float I = 0.03;
+    char temp_string[30];
+
     /*** main system initialization
      *     UART, GPIO, WDT, CLOCK, System Registers
      */
-    SysInit_F5529();
-    delay(500);
-    _enable_interrupt();        // enable interrupt
-    System_Initial();           // initialize system.
-    delay(500);                    // delay and wait the first conversion.
+    Initialize();
+    delay_ms(100);              // delay and wait the first conversion.
 
-    t = tick_getTime();
-    delay(100);
-    s = tick_getTime();
-
+    set_pwm_duty_cycle_1(1);
 
     while(1)
     {
@@ -116,16 +128,67 @@ int main(int argc, char *argv[])
         {
             half_second();
             blink_led1();
+
+            sprintf(temp_string, "{\"current_temperature\": %0.2f}\n", current_temperature);
+            bcUartSend(temp_string, strlen(temp_string));
+            sprintf(temp_string, "{\"sum_error\": %0.2f}\n", sum_error);
+            bcUartSend(temp_string, strlen(temp_string));
+            sprintf(temp_string, "{\"error\": %0.2f}\n", error);
+            bcUartSend(temp_string, strlen(temp_string));
+            sprintf(temp_string, "{\"target\": %d}\n", Thr_temp);
+            bcUartSend(temp_string, strlen(temp_string));
         }
 
+        // 1/10 second interrupt
         // read ADC result
         if(flag & BIT4)         //Read ADC result
         {
+            switch (debounce_switch_s1_state) {
+                case 0:
+                    break;
+                case 1:
+                    debounce_switch_s1_state = 2;
+                    debounce_switch_s1_time = tick_getTime();
+                    break;
+                case 2:
+                    if ((tick_getTime() - debounce_switch_s1_time) > 150) {
+                        debounce_switch_s1_state = 3;
+                    }
+                    break;
+                case 3:
+                    if (GPIO_getInputPinValue(GPIO_PORT_P2, GPIO_PIN1)) {
+                        debounce_switch_s1_time = tick_getTime();
+                        debounce_switch_s1_state = 4;
+                    }
+                    break;
+                case 4:
+                    if ((tick_getTime() - debounce_switch_s1_time) > 150) {
+                        debounce_switch_s1_state = 0;
+                        GPIO_clearInterrupt(GPIO_PORT_P2, GPIO_PIN1);
+                        GPIO_enableInterrupt(GPIO_PORT_P2, GPIO_PIN1);
+                    }
+                    break;
+            }
+
             ADC_display();
             blink_led2();
+
+            if ((current_temperature > 20) && (current_temperature < 300)) {
+                error = Thr_temp - current_temperature;
+                sum_error += error;
+                if (sum_error < 0) sum_error = 0;   // anit-windup
+
+
+                pwm = P * error +  I * sum_error;
+                if (pwm > 512) pwm = 512;
+                if (pwm < 0) pwm = 0;
+
+                set_pwm_duty_cycle_1(pwm);
+            }
+
         }
 
-   		if(flag & BIT0)				// S2 service, set the Threshold temperature
+   		if(flag & BIT0)				// Button S2: service, set the Threshold temperature
    		{
    			flag &= ~ BIT0;			// flag is reset
    			if(Thr_state != 0)
@@ -136,7 +199,7 @@ int main(int argc, char *argv[])
    				flag ^= BIT8;		// display temperature in Fahrenheit
    		}
 
-   		if(flag & BIT1)				// if S1 is pushed, threshold temperature state machine will be changed
+   		if(flag & BIT1)				// Button S1: threshold temperature state machine will be changed
    		{
    			flag &= ~BIT1;			// flag is reset
    			if(Thr_state >= 3)		// if in state 3, change to state 0;
@@ -151,7 +214,7 @@ int main(int argc, char *argv[])
    			}
    		}
 
-   		else
+
    		__no_operation();
     }
     
@@ -160,43 +223,6 @@ int main(int argc, char *argv[])
 }
 
 
-/*
- * function name:System_Initial()
- * description: Initialize the system. include I/O, LCD and ADS1118.
- */
-void System_Initial()
-{
-    flag  = 0;      //reset flag
-
-    Thr_state = 0;  //threshold temperature setting state machine counter
-    Thr_temp = 100; //configure threshold temperature to 100;
-    Act_temp = 0;
-    set_temp = Thr_temp; // set for future use in changing values
-
-    // IO initial
-    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN6);    // CS of LCD HIGH
-    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN3);    // RS of LCD HIGH
-    GPIO_setOutputHighOnPin(GPIO_PORT_P8, GPIO_PIN1);    // RST of LCD HIGH
-    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN7);    // CS of DS1118 HIGH
-    GPIO_setOutputHighOnPin(GPIO_PORT_P6, GPIO_PIN5);    // BUZZER OFF
-
-    flag |= BIT8;   // Set temp to display Farenheit
-    //flag |= BIT9; // set bit9 to use CH1 in the ads1118
-
-    LCD_init();                     // LCD initial
-    LCD_clear();                    // LCD clear
-    LCD_display_string(0,"Th:\0");  // display "ADS1118"
-    LCD_display_string(1,"Temp:        CH0\0"); // display threshold temp and actual temp;
-    LCD_display_char(1,10,0xDF);
-    LCD_display_char(1,11,'F');
-    LCD_display_number(0,3,Thr_temp);// display threshold temp number
-
-    ADS_Config(0);                  // set ADS1118 to convert local temperature, and start conversion.
-
-}
-
-#define GPIO_ALL    GPIO_PIN0|GPIO_PIN1|GPIO_PIN2|GPIO_PIN3| \
-                    GPIO_PIN4|GPIO_PIN5|GPIO_PIN6|GPIO_PIN7
 
 /*
  * This function drives all the I/O's as output-low, to avoid floating inputs
@@ -292,13 +318,7 @@ void InitClocks(unsigned long mclkFreq)
 }
 
 
-/****
- *      SysInit_F5529
- *      initialization of the chip - a MSP430F5529
- *          UART, GPIO, WDT, CLOCK, System Registers
- */
-
-void SysInit_F5529()
+void Initialize()
 {
     _disable_interrupt();
 
@@ -318,15 +338,43 @@ void SysInit_F5529()
 
     tick_init();
 
-    uart_init();
+    pwm_init();
+
+    bcUartInit();
 
     // Enable global interrupt
     __enable_interrupt();
 
-    // Set WatchDog Timer off
-    WDTCTL = WDTPW + WDTHOLD;
+    flag  = 0;      //reset flag
+
+    Thr_state = 0;  //threshold temperature setting state machine counter
+    Thr_temp = 50; //configure threshold temperature to 100;
+    Act_temp = 0;
+    set_temp = Thr_temp; // set for future use in changing values
+
+    // IO initial
+    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN6);    // CS of LCD HIGH
+    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN3);    // RS of LCD HIGH
+    GPIO_setOutputHighOnPin(GPIO_PORT_P8, GPIO_PIN1);    // RST of LCD HIGH
+    GPIO_setOutputHighOnPin(GPIO_PORT_P2, GPIO_PIN7);    // CS of DS1118 HIGH
+    GPIO_setOutputHighOnPin(GPIO_PORT_P6, GPIO_PIN5);    // BUZZER OFF
+
+    flag &= !BIT8;   // Set temp to display Farenheit
+    //flag |= BIT9; // set bit9 to use CH1 in the ads1118
+
+    LCD_init();                     // LCD initial
+    LCD_clear();                    // LCD clear
+    LCD_display_string(0,"Th:\0");  // display "ADS1118"
+    LCD_display_string(1,"Temp:        CH0\0"); // display threshold temp and actual temp;
+    LCD_display_char(1,10,0xDF);
+    LCD_display_char(1,11,'F');
+    LCD_display_number(0,3,Thr_temp);// display threshold temp number
+
+    ADS_Config(0);                  // set ADS1118 to convert local temperature, and start conversion.
 }
-void delay(unsigned int d)
+
+
+void delay_ms(unsigned int d)
 {
     unsigned int t,s;
 
@@ -345,6 +393,7 @@ void ADC_display()
     //float sensor;
 
     static signed int local_data = 0, far_data = 0;
+    signed int lc;
     signed int temp;
 
     flag &= ~ BIT4;                 // flag is reset
@@ -355,10 +404,12 @@ void ADC_display()
     else
     {
         far_data = ADS_Read(0);     //read far-end temperature,and start a new convertion for local temperature sensor.
-        temp = far_data + local_compensation(local_data);   // transform the local_data to compensation codes of far-end.
+        lc = local_compensation(local_data);   // transform the local_data to compensation codes of far-end.
+        temp = far_data + lc;
 
         temp = ADC_code2temp(temp); // transform the far-end thermocouple codes to temperature.
 
+        current_temperature = (float)temp/10.0;
         if(flag & BIT8)             // display temperature in Fahrenheit
         {
             Act_temp = (signed int)(((temp * 9) / 5) + 320);
@@ -397,21 +448,21 @@ void half_second()
     flag &= ~ BIT7;
 
 
-    // judge actual temperature is higher than threshold temperature. if higher, buzzer will work
-    if(flag & BIT8) // check for Farenheit conversion
-    {
-        threshold_temp = 10*(((Thr_temp * 9)/5)+32);
-    }
-    else threshold_temp = (10*Thr_temp);
-
-    if((Act_temp >= threshold_temp) && (flag & BIT6))
-    {
-        BUZZ_ON;
-    }
-    else
-    {
-        BUZZ_OFF;
-    }
+//    // judge actual temperature is higher than threshold temperature. if higher, buzzer will work
+//    if(flag & BIT8) // check for Farenheit conversion
+//    {
+//        threshold_temp = 10*(((Thr_temp * 9)/5)+32);
+//    }
+//    else threshold_temp = (10*Thr_temp);
+//
+//    if((Act_temp >= threshold_temp) && (flag & BIT6))
+//    {
+//        BUZZ_ON;
+//    }
+//    else
+//    {
+//        BUZZ_OFF;
+//    }
 
     //display threshold temperature setting
     if(Thr_state == 0x01)                       //threshold temperature state machine output.
@@ -638,63 +689,48 @@ void InitTimers(void)
 {
     // Timer 0
     // needs to be running at 0.5 sec
-    /*
-     * TA0CCTL0, Capture/Compare Control Register 0
-     *
-     * CM_0 -- No Capture
-     * CCIS_0 -- CCIxA
-     * ~SCS -- Asynchronous Capture
-     * ~SCCI -- Latched capture signal (read)
-     * ~CAP -- Compare mode
-     * OUTMOD_0 -- PWM output mode: 0 - OUT bit value
-     *
-     * Note: ~<BIT> indicates that <BIT> has value zero
-     */
-    TA0CCTL0 = CM_0 + CCIS_0 + OUTMOD_0 + CCIE;
+    Timer_A_initUpModeParam initUpParam = { 0 };
+           initUpParam.clockSource = TIMER_A_CLOCKSOURCE_ACLK;                       // Use ACLK (slower clock)
+           initUpParam.clockSourceDivider = TIMER_A_CLOCKSOURCE_DIVIDER_1;           // Input clock = SMCLK / 8= 1MHz
+           initUpParam.timerPeriod = 16384;                                     // Period 1MHz/10000 =100Hz -> WRITTEN IN CCR0
+           //initUpParam.timerInterruptEnable_TAIE = TIMER_A_TAIE_INTERRUPT_DISABLE;   // Enable TAR -> 0 interrupt
+           initUpParam.captureCompareInterruptEnable_CCR0_CCIE =
+                   TIMER_A_CCIE_CCR0_INTERRUPT_ENABLE;                               // Enable CCR0 compare interrupt
+           initUpParam.timerClear = TIMER_A_DO_CLEAR;                                // Clear TAR & clock divider
+           initUpParam.startTimer = false;   // Don't start the timer, yet
 
-    /* TA0CCR0, Timer_A Capture/Compare Register 0 */
-    TA0CCR0 = 16384;  // 0.5 sec -- 32768 clock
+       Timer_A_initUpMode (TIMER_A0_BASE, &initUpParam);
+       Timer_A_clearTimerInterrupt( TIMER_A0_BASE );                                 // Clear TA0IFG
+       Timer_A_clearCaptureCompareInterrupt( TIMER_A0_BASE,
+           TIMER_A_CAPTURECOMPARE_REGISTER_0                                         // Clear CCR0IFG
+       );
 
-    /*
-     * TA0CTL, Timer_A0 Control Register
-     *
-     * TASSEL_1 -- ACLK
-     * ID_0 -- Divider - /1
-     * MC_1 -- Up Mode
-     */
-    TA0CTL = TASSEL_1 + ID_0 + MC_1;
-    //---------------------------------------------
+       Timer_A_startCounter(
+           TIMER_A0_BASE,
+           TIMER_A_UP_MODE
+       );
 
-    //---------------------------------------------
-    // Timer 1
-    //  set for 0.1 sec to sample temp
-    //
-    /*
-     * TA1CCTL0, Capture/Compare Control Register 0
-     *
-     * CM_0 -- No Capture
-     * CCIS_0 -- CCIxA
-     * ~SCS -- Asynchronous Capture
-     * ~SCCI -- Latched capture signal (read)
-     * ~CAP -- Compare mode
-     * OUTMOD_0 -- PWM output mode: 0 - OUT bit value
-     *
-     * Note: ~<BIT> indicates that <BIT> has value zero
-     */
-    TA1CCTL0 = CM_0 + CCIS_0 + OUTMOD_0 + CCIE;
+       // Timer
+       // needs to be running at 0.1 sec
+              initUpParam.clockSource = TIMER_A_CLOCKSOURCE_ACLK;                       // Use ACLK (slower clock)
+              initUpParam.clockSourceDivider = TIMER_A_CLOCKSOURCE_DIVIDER_1;           // Input clock = SMCLK / 8= 1MHz
+              initUpParam.timerPeriod = 3280;                                     // Period 1MHz/10000 =100Hz -> WRITTEN IN CCR0
+              //initUpParam.timerInterruptEnable_TAIE = TIMER_A_TAIE_INTERRUPT_DISABLE;   // Enable TAR -> 0 interrupt
+              initUpParam.captureCompareInterruptEnable_CCR0_CCIE =
+                      TIMER_A_CCIE_CCR0_INTERRUPT_ENABLE;                               // Enable CCR0 compare interrupt
+              initUpParam.timerClear = TIMER_A_DO_CLEAR;                                // Clear TAR & clock divider
+              initUpParam.startTimer = false;   // Don't start the timer, yet
 
-    /* TA1CCR0, Timer_A Capture/Compare Register 0 */
-    TA1CCR0 = 3280;  // 0.1 sec -- 32768 clk
+          Timer_A_initUpMode (TIMER_A1_BASE, &initUpParam);
+          Timer_A_clearTimerInterrupt( TIMER_A1_BASE );                                 // Clear TA0IFG
+          Timer_A_clearCaptureCompareInterrupt( TIMER_A1_BASE,
+              TIMER_A_CAPTURECOMPARE_REGISTER_0                                         // Clear CCR0IFG
+          );
 
-    /*
-     * TA1CTL, Timer_A3 Control Register
-     *
-     * TASSEL_1 -- ACLK
-     * ID_0 -- Divider - /1
-     * MC_1 -- Up Mode
-     */
-    TA1CTL = TASSEL_1 + ID_0 + MC_1;
-    //----------------------------------------------
+          Timer_A_startCounter(
+              TIMER_A1_BASE,
+              TIMER_A_UP_MODE
+          );
 }
 
 
@@ -730,7 +766,9 @@ void Port_1_ISR(void)
         GPIO_clearInterrupt(GPIO_PORT_P1, GPIO_PIN1);
     }
 
-    GPIO_enableInterrupt(GPIO_PORT_P1, GPIO_PIN1);
+    //GPIO_enableInterrupt(GPIO_PORT_P1, GPIO_PIN1);
+    debounce_switch_s2 = 1;
+    debounce_switch_s2_start_time = tick_getTime();
 }
 
 /*
@@ -755,7 +793,8 @@ void Port_2_ISR(void)
         GPIO_clearInterrupt(GPIO_PORT_P2, GPIO_PIN1);
     }
 
-    GPIO_enableInterrupt(GPIO_PORT_P2, GPIO_PIN1);
+    //GPIO_enableInterrupt(GPIO_PORT_P2, GPIO_PIN1);
+    debounce_switch_s1_state = 1;
 }
 
 
@@ -792,3 +831,4 @@ void TIMER1_A0_ISR(void)
     flag |= BIT4;
     flag ^= BIT5;
 }
+

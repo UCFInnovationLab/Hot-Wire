@@ -10,7 +10,7 @@
 #include <string.h>
 
 #include "inc/hw_memmap.h"
-#include "timer_a.h"
+#include "timer_b.h"
 
 #include "tick.h"
 
@@ -31,25 +31,25 @@ void tick_init()
 {
 	tick = 0;
 
-    Timer_A_initUpModeParam initUpParam = { 0 };
-        initUpParam.clockSource = TIMER_A_CLOCKSOURCE_SMCLK;                       // Use ACLK (slower clock)
-        initUpParam.clockSourceDivider = TIMER_A_CLOCKSOURCE_DIVIDER_8;           // Input clock = SMCLK / 8= 1MHz
-        initUpParam.timerPeriod = 10000;                                     // Period 1MHz/10000 =100Hz -> WRITTEN IN CCR0
-        initUpParam.timerInterruptEnable_TAIE = TIMER_A_TAIE_INTERRUPT_DISABLE;   // Enable TAR -> 0 interrupt
+    Timer_B_initUpModeParam initUpParam = { 0 };
+        initUpParam.clockSource = TIMER_B_CLOCKSOURCE_SMCLK;                       // Use ACLK (slower clock)
+        initUpParam.clockSourceDivider = TIMER_B_CLOCKSOURCE_DIVIDER_8;           // Input clock = SMCLK / 8= 1MHz
+        initUpParam.timerPeriod = 1000;                                     // Period 1MHz/1000 =1000Hz -> WRITTEN IN CCR0
+        //initUpParam.timerInterruptEnable_TAIE = TIMER_B_TAIE_INTERRUPT_DISABLE;   // Enable TAR -> 0 interrupt
         initUpParam.captureCompareInterruptEnable_CCR0_CCIE =
-                TIMER_A_CCIE_CCR0_INTERRUPT_ENABLE;                               // Enable CCR0 compare interrupt
-        initUpParam.timerClear = TIMER_A_DO_CLEAR;                                // Clear TAR & clock divider
+                TIMER_B_CCIE_CCR0_INTERRUPT_ENABLE;                               // Enable CCR0 compare interrupt
+        initUpParam.timerClear = TIMER_B_DO_CLEAR;                                // Clear TAR & clock divider
         initUpParam.startTimer = false;   // Don't start the timer, yet
 
-    Timer_A_initUpMode (TIMER_A2_BASE, &initUpParam);
-    Timer_A_clearTimerInterrupt( TIMER_A2_BASE );                                 // Clear TA0IFG
-    Timer_A_clearCaptureCompareInterrupt( TIMER_A2_BASE,
-        TIMER_A_CAPTURECOMPARE_REGISTER_0                                         // Clear CCR0IFG
+    Timer_B_initUpMode (TIMER_B0_BASE, &initUpParam);
+    Timer_B_clearTimerInterrupt( TIMER_B0_BASE );                                 // Clear TA0IFG
+    Timer_B_clearCaptureCompareInterrupt( TIMER_B0_BASE,
+        TIMER_B_CAPTURECOMPARE_REGISTER_0                                         // Clear CCR0IFG
     );
 
-    Timer_A_startCounter(
-        TIMER_A2_BASE,
-        TIMER_A_UP_MODE
+    Timer_B_startCounter(
+        TIMER_B0_BASE,
+        TIMER_B_UP_MODE
     );
 }
 
@@ -69,21 +69,21 @@ tick_t tick_getTime()
 	tick_t tickValue = 0;
 
 	/* Atomically retrieve the tick counter. */
-	//TIMER_A_disableInterrupt(TIMER_A2_BASE);
+	//TIMER_B_disableInterrupt(TIMER_B0_BASE);
 	tickValue = tick;
-	//TIMER_A_enableInterrupt(TIMER_A2_BASE);
+	//TIMER_B_enableInterrupt(TIMER_B0_BASE);
 
 	return tickValue;
 }
 
 
 #if defined(__TI_COMPILER_VERSION__) || defined(__IAR_SYSTEMS_ICC__)
-#pragma vector=TIMER2_A0_VECTOR
+#pragma vector=TIMER0_B0_VECTOR
 __interrupt
 #elif defined(__GNUC__)
-void TIMER2_A0_ISR(void) __attribute__((interrupt(TIMER2_A0_VECTOR)));
+void TIMER0_B0_ISR(void) __attribute__((interrupt(TIMER0_B0_VECTOR)));
 #endif
-void TIMER2_A0_ISR(void)
+void TIMER0_B0_ISR(void)
 {
     tick++;                         //Timer Overflow
 }

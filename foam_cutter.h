@@ -1,1 +1,1 @@
-void delay(unsigned int);
+void delay_ms(unsigned int);
