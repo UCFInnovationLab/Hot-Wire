@@ -22,7 +22,7 @@
 // P2.5 (TA2.2)
 void pwm_init(void)
 {
-    //P1.5 as PWM output
+    //P2.5 as PWM output
     GPIO_setAsPeripheralModuleFunctionOutputPin(
       GPIO_PORT_P2,
       GPIO_PIN5

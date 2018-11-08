@@ -76,8 +76,8 @@ float error;
 float sum_error=0;
 float prev_error;
 float d_error;
-float P = 35.0;
-float I = 0.03;
+float P = 20.0;
+float I = 0.01;
 float D = 0.00;
 int pwm;
 
